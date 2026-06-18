@@ -1,27 +1,37 @@
+import os
 import random
 import pymongo
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any
 
-# Import your multi-agent architecture scripts
-from backend.agents.crawl_agent import crawl_agent
-from backend.agents.personalization_agent import personalization_agent
+# Relative imports to guarantee Vercel paths resolve perfectly in production
+from agents.crawl_agent import crawl_agent
+from agents.personalization_agent import personalization_agent
 
 app = FastAPI(title="NewsAI Aggregator Platform")
 
-# Allow absolute cross-origin resource access sharing for mobile testing devices
+# 🔌 FIXED CORS MIDDLEWARE CONFIGURATION
+# Using allow_origin_regex or a clean fallback layout prevents browser-side network blocks.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["*"],  # Safely opens endpoints up to Vercel production routing
+    allow_credentials=False, # Must be False when using wildcard "*" to satisfy strict browser engine standards
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Connect securely to your local MongoDB service
-client = pymongo.MongoClient("mongodb://localhost:27017/")
+# 🎯 SECURED CLOUD ENVIRONMENT CONFIGURATION
+# Pulls from Render configuration settings automatically, falling back to local string if empty
+MONGO_URI = os.getenv(
+    "MONGO_URI", 
+    "mongodb+srv://70145562_db_user:Q7eNCwlPoTvt6lL2@cluster0.ffx9jdh.mongodb.net/?appName=Cluster0"
+)
+
+print(f"🔌 FORCED BACKEND PRODUCTION CONNECTION: {MONGO_URI[:35]}...")
+
+client = pymongo.MongoClient(MONGO_URI)
 db = client["news_aggregator"]
 articles_collection = db["articles"]
 digests_collection = db["digests"]
@@ -30,13 +40,26 @@ class PipelineRequest(BaseModel):
     topics: List[str]
 
 @app.post("/run-pipeline/{user_id}")
-async def run_pipeline(user_id: str, request: List[str]):
+async def run_pipeline(user_id: str, raw_request: FastAPIRequest):
     try:
         print(f"🚀 MAIN BACKEND: Initializing Graph Pipeline for User {user_id}")
-        print(f"📥 Received Target Topics: {request}")
+        
+        # Capture raw json payload to automatically handle formatting variances
+        body_data = await raw_request.json()
+        print(f"📥 Raw Payload Caught: {body_data} (Type: {type(body_data)})")
+        
+        # Smart Dynamic Parser: Checks if frontend sent a dictionary object or a direct array list
+        if isinstance(body_data, dict) and "topics" in body_data:
+            incoming_topics = body_data["topics"]
+        elif isinstance(body_data, list):
+            incoming_topics = body_data
+        else:
+            incoming_topics = [str(body_data)]
+            
+        print(f"🎯 Evaluated Target Topics for AI Agents: {incoming_topics}")
         
         # 1. Clean and lowercase the topics list
-        clean_topics = [str(t).lower().strip() for t in request]
+        clean_topics = [str(t).lower().strip() for t in incoming_topics]
         
         # 2. Run the Crawl Agent to get real-time articles
         crawl_results = crawl_agent(clean_topics)
